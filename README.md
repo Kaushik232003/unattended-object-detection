@@ -1,6 +1,6 @@
 # Unattended Object Detection System
 
-A production-ready real-time detection system for abandoned objects using YOLOv8 and DeepSORT tracking. The system monitors video feeds to detect when objects are left unattended for configurable periods and generates alerts with event clips.
+A  real-time detection system for abandoned objects using YOLOv8 and DeepSORT tracking. The system monitors video feeds to detect when objects are left unattended for configurable periods and generates alerts with event clips.
 
 ## 🎯 Features
 
