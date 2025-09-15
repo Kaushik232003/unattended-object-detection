@@ -1,0 +1,98 @@
+# Example Configuration for Unattended Object Detection System
+# Copy this file and modify as needed for your use case
+
+detection:
+  # YOLO model selection (speed vs accuracy tradeoff)
+  # yolov8n.pt: Fastest, lowest accuracy, best for CPU
+  # yolov8s.pt: Fast, good accuracy, balanced
+  # yolov8m.pt: Medium speed, high accuracy, GPU recommended  
+  # yolov8l.pt: Slow, higher accuracy, high-end GPU
+  # yolov8x.pt: Slowest, highest accuracy, research/offline
+  model_size: "yolov8n.pt"
+
+  # Detection thresholds
+  img_size: 640  # Input image size (416, 640, 832, 1280)
+  conf_threshold: 0.35  # Confidence threshold (0.1-0.9)
+  iou_threshold: 0.45   # IoU threshold for NMS (0.3-0.7)
+
+  # Device selection
+  device: "auto"  # "auto", "cpu", "cuda", "mps"
+  verbose: false  # YOLO verbose output
+
+  # Object classes to monitor (COCO dataset class names)
+  object_classes:
+    - "backpack"
+    - "handbag"
+    - "suitcase"
+    - "laptop"
+    - "bag"
+    - "cell phone"
+    - "bottle"
+    - "box"
+    - "sports ball"
+    - "book"
+    - "clock"
+    - "vase"
+
+  # Person class name (should match COCO)
+  person_class_name: "person"
+
+tracking:
+  # DeepSORT parameters
+  max_age: 30  # Maximum frames to keep track without detection
+  n_init: 3    # Minimum consecutive detections for track initialization
+  max_iou_distance: 0.7     # Maximum IoU distance for association
+  max_cosine_distance: 0.2  # Maximum cosine distance for appearance
+  nn_budget: 100           # Maximum size of appearance descriptor gallery
+
+alert:
+  # Core abandonment detection parameters
+  t_unattended: 3.0        # Seconds before object considered unattended
+  confirm_frames: 3        # Consecutive frames to confirm condition
+  motion_threshold_px: 2.5 # Pixel movement threshold per frame
+
+  # Person-object association
+  proximity_threshold_px: 120.0   # Person-object proximity in pixels
+  contact_window_seconds: 2.0     # Time window for person-object contact
+  stationary_buffer_size: 16      # Number of frames for motion calculation
+
+  # Alert management
+  alert_cooldown_seconds: 10.0    # Minimum time between alerts for same object
+
+video:
+  # Supported video formats
+  supported_formats:
+    - ".mp4"
+    - ".avi" 
+    - ".mov"
+    - ".mkv"
+    - ".flv"
+    - ".wmv"
+    - ".m4v"
+    - ".3gp"
+
+  # Processing parameters
+  process_every_n_frames: 1  # Process every N frames (1=all frames)
+  buffer_fps: 15.0          # FPS for saved event clips
+  pre_buffer_seconds: 5.0   # Seconds before event to include in clip
+  post_buffer_seconds: 5.0  # Seconds after event to include in clip
+
+system:
+  # Paths (relative to project root)
+  project_root: "."
+  video_path: "video.mp4"
+  events_dir: "events"
+  logs_dir: "logs"
+  models_dir: "models"
+
+  # Logging configuration
+  log_level: "INFO"          # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_to_file: true
+  log_to_console: true
+  max_log_file_size: 10485760  # 10MB
+  log_backup_count: 5
+
+  # Performance settings
+  enable_gpu: true
+  num_threads: -1           # -1 for auto-detect
+  memory_limit_gb: null     # null for no limit
