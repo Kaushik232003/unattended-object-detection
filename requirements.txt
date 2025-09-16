@@ -1,5 +1,6 @@
 # Core ML/CV libraries
-ultralytics==8.0.196
+onnxruntime
+onnx
 opencv-python==4.8.1.78
 torch>=2.2.0,<2.9.0
 torchvision>=0.17.0,<0.20.0

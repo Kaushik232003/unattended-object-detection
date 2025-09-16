@@ -23,7 +23,7 @@ from utils import (
 
 # Import external libraries
 try:
-    from ultralytics import YOLO
+    import onnxruntime as ort
     from deep_sort_realtime.deepsort_tracker import DeepSort
 except ImportError as e:
     print(f"❌ Failed to import required libraries: {e}")
@@ -284,17 +284,14 @@ class UnattendedObjectDetector:
         self.start_time = time.time()
 
     def _initialize_models(self) -> None:
-        """Initialize YOLO and DeepSORT models"""
+        """Initialize ONNX model and DeepSORT tracker"""
         try:
-            # Initialize YOLO
-            model_path = self.config.get_model_path()
-            self.logger.info(f"Loading YOLO model: {model_path}")
-
-            self.model = YOLO(model_path)
-            if self.device != "cpu":
-                self.model.to(self.device)
-
-            self.logger.info(f"YOLO model loaded successfully on {self.device}")
+            # Initialize ONNX YOLOv8
+            model_path = self.config.get_model_path().replace('.pt', '.onnx')
+            self.logger.info(f"Loading YOLO ONNX model: {model_path}")
+            self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            self.input_name = self.session.get_inputs()[0].name
+            self.logger.info(f"YOLO ONNX model loaded successfully on CPU")
 
             # Initialize DeepSORT
             self.tracker = DeepSort(
@@ -304,9 +301,7 @@ class UnattendedObjectDetector:
                 max_cosine_distance=self.config.tracking.max_cosine_distance,
                 nn_budget=self.config.tracking.nn_budget
             )
-
             self.logger.info("DeepSORT tracker initialized successfully")
-
         except Exception as e:
             self.logger.error(f"Failed to initialize models: {e}")
             raise
@@ -318,44 +313,40 @@ class UnattendedObjectDetector:
         buffer_seconds = self.config.video.pre_buffer_seconds + 5  # Extra margin
         return int(buffer_seconds * estimated_fps) + 10
 
-    def _extract_detections(self, results: Any) -> List[Dict[str, Any]]:
-        """Extract detections from YOLO results"""
+    def _extract_detections(self, frame: np.ndarray) -> List[Dict[str, Any]]:
+        """Extract detections from ONNX YOLOv8 model output"""
         detections = []
-
         try:
-            if not results or len(results) == 0:
-                return detections
+            # Preprocess frame
+            img = cv2.resize(frame, (640, 640))
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = img.astype(np.float32) / 255.0
+            img = np.transpose(img, (2, 0, 1))
+            img = np.expand_dims(img, axis=0)
+            img = np.ascontiguousarray(img)
 
-            result = results[0]  # Single image result
-
-            if not hasattr(result, 'boxes') or result.boxes is None:
-                return detections
-
-            boxes = result.boxes
-            names = result.names
-
-            # Extract box data
-            if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
-                xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy.numpy()
-                confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf.numpy()
-                cls_ids = boxes.cls.cpu().numpy().astype(int) if hasattr(boxes.cls, 'cpu') else boxes.cls.numpy().astype(int)
-
-                for i, (box, conf, cls_id) in enumerate(zip(xyxy, confs, cls_ids)):
-                    x1, y1, x2, y2 = map(float, box)
-                    class_name = names.get(cls_id, f"class_{cls_id}")
-
-                    detection = {
-                        'bbox': [x1, y1, x2, y2],
-                        'confidence': float(conf),
-                        'class': class_name,
-                        'class_id': cls_id
-                    }
-
-                    detections.append(detection)
-
+            # Run ONNX inference
+            outputs = self.session.run(None, {self.input_name: img})
+            # YOLOv8 ONNX output: [boxes, scores, class_ids] (may vary)
+            # Here, we assume output[0] is (N, 85): x1, y1, x2, y2, conf, 80 class scores
+            preds = outputs[0]
+            for pred in preds:
+                x1, y1, x2, y2, conf = pred[:5]
+                class_scores = pred[5:]
+                cls_id = int(np.argmax(class_scores))
+                score = class_scores[cls_id]
+                if score < self.config.detection.conf_threshold:
+                    continue
+                class_name = self.config.detection.object_classes[cls_id] if cls_id < len(self.config.detection.object_classes) else f'class_{cls_id}'
+                detection = {
+                    'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                    'confidence': float(score),
+                    'class': class_name,
+                    'class_id': cls_id
+                }
+                detections.append(detection)
         except Exception as e:
             self.logger.error(f"Error extracting detections: {e}")
-
         return detections
 
     def _filter_detections(self, detections: List[Dict[str, Any]]) -> Tuple[List[Dict], List[Dict]]:
@@ -505,24 +496,13 @@ class UnattendedObjectDetector:
         """Process a single frame"""
         frame_start_time = self.performance_monitor.start_frame()
         current_time = time.time()
-
         try:
             # Add frame to buffer
             self.frame_buffer.append(frame.copy())
             self.buffer_timestamps.append(current_time)
 
-            # Run YOLO detection
-            results = self.model.predict(
-                source=[frame],
-                imgsz=self.config.detection.img_size,
-                conf=self.config.detection.conf_threshold,
-                iou=self.config.detection.iou_threshold,
-                verbose=self.config.detection.verbose,
-                device=self.device
-            )
-
-            # Extract and filter detections
-            detections = self._extract_detections(results)
+            # Run ONNX YOLO detection
+            detections = self._extract_detections(frame)
             object_detections, person_detections = self._filter_detections(detections)
 
             # Update tracks
@@ -562,7 +542,6 @@ class UnattendedObjectDetector:
                     'system_stats': self.performance_monitor.get_system_stats()
                 }
             }
-
         except Exception as e:
             self.logger.error(f"Error processing frame: {e}")
             return {
