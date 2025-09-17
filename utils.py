@@ -378,39 +378,47 @@ class DeviceManager:
             logger.info(f"Using specified device: {device}")
             return device
 
-        # Auto-detection logic
-        if torch.cuda.is_available() and config.system.enable_gpu:
-            device = "cuda"
-            gpu_name = torch.cuda.get_device_name(0)
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
-            logger.info(f"Using GPU: {gpu_name} ({gpu_memory:.1f}GB)")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and config.system.enable_gpu:
-            device = "mps"
-            logger.info("Using Apple Metal Performance Shaders (MPS)")
-        else:
-            device = "cpu"
-            logger.info("Using CPU for inference")
-
+        # Auto-detection logic - force CPU for this system
+        device = "cpu"
+        cpu_count = os.cpu_count()
+        logger.info(f"Using CPU for inference ({cpu_count} cores available)")
         return device
 
     @staticmethod
     def optimize_torch_settings(device: str, logger: Logger) -> None:
         """Optimize PyTorch settings for the selected device"""
         try:
-            if device == "cuda":
-                # Enable optimizations for CUDA
-                torch.backends.cudnn.benchmark = True
-                torch.backends.cudnn.deterministic = False
-                logger.info("Enabled CUDA optimizations")
-
             # Set number of threads for CPU inference
             if device == "cpu":
-                num_threads = max(1, os.cpu_count() // 2)
+                num_threads = max(1, os.cpu_count() - 1)  # Leave one core free
                 torch.set_num_threads(num_threads)
-                logger.info(f"Set CPU threads: {num_threads}")
+                
+                # Additional CPU optimizations
+                torch.set_num_interop_threads(max(1, num_threads // 2))
+                os.environ['OMP_NUM_THREADS'] = str(num_threads)
+                os.environ['MKL_NUM_THREADS'] = str(num_threads)
+                os.environ['NUMEXPR_NUM_THREADS'] = str(num_threads)
+                
+                logger.info(f"Optimized CPU settings: {num_threads} threads")
 
         except Exception as e:
             logger.warning(f"Failed to optimize torch settings: {e}")
+
+    @staticmethod
+    def optimize_onnx_cpu_settings() -> Dict[str, Any]:
+        """Get optimized ONNX CPU execution provider settings"""
+        cpu_count = os.cpu_count()
+        return {
+            'intra_op_num_threads': max(1, cpu_count - 1),
+            'inter_op_num_threads': max(1, cpu_count // 2),
+            'allow_profiling': False,
+            'use_arena': True,
+            'arena_extend_strategy': 'kSameAsRequested',
+            'enable_cpu_mem_arena': True,
+            'enable_memory_pattern_optimization': True,
+            'use_parallel_mode': True,
+            'dynamic_block_base': 1
+        }
 
 
 # Utility functions for common operations

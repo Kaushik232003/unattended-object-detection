@@ -3,25 +3,23 @@ Unattended Object Detection System
 Main application for real-time detection of abandoned objects using YOLOv8 and DeepSORT
 """
 
+# Standard library imports
 import os
 import sys
 import time
 import argparse
+
+# Third-party imports
 import cv2
 import numpy as np
-from collections import deque, defaultdict
-from typing import Dict, List, Tuple, Optional, Any
-from datetime import datetime
+from collections import deque
+from typing import Dict, List, Tuple, Any
 
-# Import our custom modules
+# Custom module imports
 from config import ConfigManager
-from utils import (
-    Logger, PerformanceMonitor, GeometryUtils, MotionAnalyzer,
-    VideoProcessor, AlertManager, DeviceManager, 
-    validate_dependencies, generate_timestamp, format_duration
-)
+from utils import Logger, PerformanceMonitor, GeometryUtils, MotionAnalyzer, VideoProcessor, AlertManager, DeviceManager, validate_dependencies, generate_timestamp, format_duration
 
-# Import external libraries
+# External libraries
 try:
     import onnxruntime as ort
     from deep_sort_realtime.deepsort_tracker import DeepSort
@@ -31,6 +29,60 @@ except ImportError as e:
     sys.exit(1)
 
 
+def yolo_postprocess(preds, conf_threshold, coco_classes):
+    """
+    Postprocess YOLOv8 ONNX output.
+    Args:
+        preds: np.ndarray, shape [1, 84, num_detections] (YOLOv8 format)
+        conf_threshold: float, confidence threshold
+        coco_classes: list of class names
+    Returns:
+        List of dicts: [{'bbox': [x1, y1, x2, y2], 'confidence': conf, 'class': class_name, 'class_id': idx}]
+    """
+    detections = []
+    
+    # YOLOv8 output is [1, 84, num_detections], need to transpose to [num_detections, 84]
+    if len(preds.shape) == 3:
+        preds = preds[0].T  # Remove batch dimension and transpose
+    elif len(preds.shape) == 2:
+        preds = preds.T     # Just transpose if already 2D
+    
+    for pred in preds:
+        # YOLOv8 format: [x_center, y_center, width, height, class_scores...]
+        x_center, y_center, width, height = pred[:4]
+        class_scores = pred[4:]
+        
+        # Skip if no class scores
+        if class_scores.size == 0:
+            continue
+            
+        # Find max class score and confidence
+        max_score = np.max(class_scores)
+        if max_score < conf_threshold:
+            continue
+            
+        cls_id = int(np.argmax(class_scores))
+        
+        # Convert center format to corner format
+        x1 = float(x_center - width / 2)
+        y1 = float(y_center - height / 2)
+        x2 = float(x_center + width / 2)
+        y2 = float(y_center + height / 2)
+        
+        # Ensure class_id is valid
+        if cls_id >= len(coco_classes):
+            continue
+            
+        class_name = coco_classes[cls_id]
+        detections.append({
+            'bbox': [x1, y1, x2, y2],
+            'confidence': float(max_score),
+            'class': class_name,
+            'class_id': cls_id
+        })
+    return detections
+
+
 class ObjectTrack:
     """Represents a single object track with its state and history"""
 
@@ -38,7 +90,6 @@ class ObjectTrack:
         self.track_id = track_id
         self.class_name = class_name
         self.config = config
-
         # Timestamps
         self.first_seen = time.time()
         self.last_seen = time.time()
@@ -286,12 +337,30 @@ class UnattendedObjectDetector:
     def _initialize_models(self) -> None:
         """Initialize ONNX model and DeepSORT tracker"""
         try:
-            # Initialize ONNX YOLOv8
+            # Initialize ONNX YOLOv8 with optimized CPU settings
             model_path = self.config.get_model_path().replace('.pt', '.onnx')
             self.logger.info(f"Loading YOLO ONNX model: {model_path}")
-            self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            
+            # Configure CPU execution provider with optimizations
+            cpu_options = DeviceManager.optimize_onnx_cpu_settings()
+            
+            # Set session options for optimization
+            session_options = ort.SessionOptions()
+            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            session_options.enable_profiling = False
+            session_options.enable_mem_pattern = True
+            session_options.enable_cpu_mem_arena = True
+            
+            # Create optimized session
+            providers = [('CPUExecutionProvider', cpu_options)]
+            self.session = ort.InferenceSession(
+                model_path, 
+                providers=providers,
+                sess_options=session_options
+            )
             self.input_name = self.session.get_inputs()[0].name
-            self.logger.info(f"YOLO ONNX model loaded successfully on CPU")
+            self.logger.info("YOLO ONNX model loaded successfully with CPU optimizations")
 
             # Initialize DeepSORT
             self.tracker = DeepSort(
@@ -314,8 +383,7 @@ class UnattendedObjectDetector:
         return int(buffer_seconds * estimated_fps) + 10
 
     def _extract_detections(self, frame: np.ndarray) -> List[Dict[str, Any]]:
-        """Extract detections from ONNX YOLOv8 model output"""
-        detections = []
+        """Extract detections from ONNX YOLOv8 model output, safely handling class indices."""
         try:
             # Preprocess frame
             img = cv2.resize(frame, (640, 640))
@@ -327,27 +395,19 @@ class UnattendedObjectDetector:
 
             # Run ONNX inference
             outputs = self.session.run(None, {self.input_name: img})
-            # YOLOv8 ONNX output: [boxes, scores, class_ids] (may vary)
-            # Here, we assume output[0] is (N, 85): x1, y1, x2, y2, conf, 80 class scores
             preds = outputs[0]
-            for pred in preds:
-                x1, y1, x2, y2, conf = pred[:5]
-                class_scores = pred[5:]
-                cls_id = int(np.argmax(class_scores))
-                score = class_scores[cls_id]
-                if score < self.config.detection.conf_threshold:
-                    continue
-                class_name = self.config.detection.object_classes[cls_id] if cls_id < len(self.config.detection.object_classes) else f'class_{cls_id}'
-                detection = {
-                    'bbox': [float(x1), float(y1), float(x2), float(y2)],
-                    'confidence': float(score),
-                    'class': class_name,
-                    'class_id': cls_id
-                }
-                detections.append(detection)
+            # Use modular postprocess
+            all_detections = yolo_postprocess(
+                preds,
+                self.config.detection.conf_threshold,
+                self.config.detection.coco_classes
+            )
+            # Only keep detections for monitored object classes or person
+            detections = [d for d in all_detections if d['class'].lower() == self.config.detection.person_class_name or d['class'].lower() in [cls.lower() for cls in self.config.detection.object_classes]]
+            return detections
         except Exception as e:
             self.logger.error(f"Error extracting detections: {e}")
-        return detections
+            return []
 
     def _filter_detections(self, detections: List[Dict[str, Any]]) -> Tuple[List[Dict], List[Dict]]:
         """Separate object and person detections"""
@@ -769,7 +829,7 @@ def main() -> int:
         report = detector.run_video(args.video)
 
         print("\n✅ Video processing completed successfully!")
-        print(f"📊 Final Report:")
+        print("📊 Final Report:")
         print(f"   - Processing Time: {report['processing_time_formatted']}")
         print(f"   - Frames Processed: {report['statistics']['frames_processed']}")
         print(f"   - Alerts Triggered: {report['statistics']['alerts_triggered']}")

@@ -29,19 +29,27 @@ class DetectionConfig:
     img_size: int = 640  # Input image size for YOLO
     conf_threshold: float = 0.35  # Confidence threshold for detections
     iou_threshold: float = 0.45  # IoU threshold for NMS
-    device: str = "auto"  # "auto", "cpu", "cuda", "mps"
+    device: str = "cpu"  # Force CPU for this system
     verbose: bool = False  # YOLO verbose output
 
-    # Object classes to monitor (COCO class names)
+    # Full COCO class list from YOLOv8n.pt
+    coco_classes: List[str] = field(default_factory=lambda: [
+        'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+        'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+        'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+        'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+        'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+        'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+        'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+        'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+        'hair drier', 'toothbrush'
+    ])
+    # Object classes to monitor (subset of COCO)
     object_classes: List[str] = field(default_factory=lambda: [
-        "backpack", "handbag", "suitcase", "laptop", "bag", 
-        "cell phone", "bottle", "box", "sports ball", "book",
-        "clock", "vase", "scissors", "teddy bear", "hair drier",
-        "toothbrush", "umbrella", "tie", "remote", "keyboard",
-        "mouse", "microwave", "oven", "toaster", "sink",
-        "refrigerator", "blender", "bowl", "banana", "apple",
-        "sandwich", "orange", "broccoli", "carrot", "hot dog",
-        "pizza", "donut", "cake"
+        "backpack", "handbag", "suitcase", "laptop", "cell phone", "bottle", "sports ball", "book",
+        "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush", "umbrella", "tie", "remote", "keyboard",
+        "mouse", "microwave", "oven", "toaster", "sink", "refrigerator", "bowl", "banana", "apple",
+        "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake"
     ])
 
     person_class_name: str = "person"
@@ -87,9 +95,9 @@ class SystemConfig:
     max_log_file_size: int = 10 * 1024 * 1024  # 10MB
     log_backup_count: int = 5
 
-    # Performance settings
-    enable_gpu: bool = True
-    num_threads: int = -1  # -1 for auto-detect
+    # Performance settings - optimized for CPU
+    enable_gpu: bool = False  # Force CPU-only
+    num_threads: int = -1  # -1 for auto-detect optimal CPU threads
     memory_limit_gb: Optional[float] = None  # None for no limit
 
 
