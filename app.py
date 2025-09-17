@@ -21,11 +21,11 @@ from utils import Logger, PerformanceMonitor, GeometryUtils, MotionAnalyzer, Vid
 
 # External libraries
 try:
-    import onnxruntime as ort
+    from tensorrt_inference import TensorRTEngine
     from deep_sort_realtime.deepsort_tracker import DeepSort
 except ImportError as e:
     print(f"❌ Failed to import required libraries: {e}")
-    print("Please install dependencies: pip install -r requirements.txt")
+    print("Please install dependencies: pip install tensorrt pycuda nvidia-ml-py")
     sys.exit(1)
 
 
@@ -335,32 +335,23 @@ class UnattendedObjectDetector:
         self.start_time = time.time()
 
     def _initialize_models(self) -> None:
-        """Initialize ONNX model and DeepSORT tracker"""
+        """Initialize TensorRT engine and DeepSORT tracker"""
         try:
-            # Initialize ONNX YOLOv8 with optimized CPU settings
-            model_path = self.config.get_model_path().replace('.pt', '.onnx')
-            self.logger.info(f"Loading YOLO ONNX model: {model_path}")
+            # Initialize TensorRT YOLOv8 engine
+            engine_path = self.config.get_model_path().replace('.pt', '.engine')
+            self.logger.info(f"Loading TensorRT engine: {engine_path}")
             
-            # Configure CPU execution provider with optimizations
-            cpu_options = DeviceManager.optimize_onnx_cpu_settings()
+            # Check if engine file exists
+            if not os.path.exists(engine_path):
+                raise FileNotFoundError(f"TensorRT engine not found: {engine_path}")
             
-            # Set session options for optimization
-            session_options = ort.SessionOptions()
-            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            session_options.enable_profiling = False
-            session_options.enable_mem_pattern = True
-            session_options.enable_cpu_mem_arena = True
-            
-            # Create optimized session
-            providers = [('CPUExecutionProvider', cpu_options)]
-            self.session = ort.InferenceSession(
-                model_path, 
-                providers=providers,
-                sess_options=session_options
-            )
-            self.input_name = self.session.get_inputs()[0].name
-            self.logger.info("YOLO ONNX model loaded successfully with CPU optimizations")
+            # Initialize TensorRT engine
+            try:
+                import pycuda.autoinit  # Initialize CUDA context - import here to avoid lint warnings
+            except ImportError:
+                pass  # Will be handled by TensorRTEngine
+            self.trt_engine = TensorRTEngine(engine_path, self.logger)
+            self.logger.info("TensorRT engine loaded successfully")
 
             # Initialize DeepSORT
             self.tracker = DeepSort(
@@ -383,28 +374,24 @@ class UnattendedObjectDetector:
         return int(buffer_seconds * estimated_fps) + 10
 
     def _extract_detections(self, frame: np.ndarray) -> List[Dict[str, Any]]:
-        """Extract detections from ONNX YOLOv8 model output, safely handling class indices."""
+        """Extract detections from TensorRT YOLOv8 model output"""
         try:
-            # Preprocess frame
-            img = cv2.resize(frame, (640, 640))
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = img.astype(np.float32) / 255.0
-            img = np.transpose(img, (2, 0, 1))
-            img = np.expand_dims(img, axis=0)
-            img = np.ascontiguousarray(img)
-
-            # Run ONNX inference
-            outputs = self.session.run(None, {self.input_name: img})
-            preds = outputs[0]
-            # Use modular postprocess
-            all_detections = yolo_postprocess(
-                preds,
+            # Run TensorRT inference
+            detections = self.trt_engine.predict(
+                frame,
                 self.config.detection.conf_threshold,
                 self.config.detection.coco_classes
             )
+            
             # Only keep detections for monitored object classes or person
-            detections = [d for d in all_detections if d['class'].lower() == self.config.detection.person_class_name or d['class'].lower() in [cls.lower() for cls in self.config.detection.object_classes]]
-            return detections
+            filtered_detections = [
+                d for d in detections 
+                if d['class'].lower() == self.config.detection.person_class_name or 
+                   d['class'].lower() in [cls.lower() for cls in self.config.detection.object_classes]
+            ]
+            
+            return filtered_detections
+            
         except Exception as e:
             self.logger.error(f"Error extracting detections: {e}")
             return []

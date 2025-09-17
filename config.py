@@ -188,18 +188,48 @@ class ConfigManager:
         return file_ext in self.video.supported_formats
 
     def get_model_path(self) -> str:
-        """Get path for YOLO model file"""
+        """Get path for YOLO model file (supports .pt, .onnx, .engine)"""
         model_file = self.detection.model_size
-        if not model_file.endswith('.pt'):
-            model_file += '.pt'
-
-        # Check if model exists in models directory
-        local_model_path = self.get_absolute_path(
-            os.path.join(self.system.models_dir, model_file)
-        )
-
-        if os.path.exists(local_model_path):
-            return local_model_path
+        
+        # Check for TensorRT engine file first (highest priority)
+        for ext in ['.engine', '.onnx', '.pt']:
+            if model_file.endswith(ext):
+                base_name = model_file[:-len(ext)]
+            else:
+                base_name = model_file
+                
+            test_file = base_name + '.engine'
+            local_engine_path = self.get_absolute_path(
+                os.path.join(self.system.models_dir, test_file)
+            )
+            
+            # Check current directory for engine file
+            current_dir_engine = os.path.join(self.system.project_root, test_file)
+            
+            if os.path.exists(current_dir_engine):
+                return current_dir_engine
+            elif os.path.exists(local_engine_path):
+                return local_engine_path
+        
+        # Fall back to ONNX if no engine found
+        for ext in ['.onnx', '.pt']:
+            if model_file.endswith(ext):
+                base_name = model_file[:-len(ext)]
+            else:
+                base_name = model_file
+                
+            test_file = base_name + ext
+            local_model_path = self.get_absolute_path(
+                os.path.join(self.system.models_dir, test_file)
+            )
+            
+            # Check current directory
+            current_dir_model = os.path.join(self.system.project_root, test_file)
+            
+            if os.path.exists(current_dir_model):
+                return current_dir_model
+            elif os.path.exists(local_model_path):
+                return local_model_path
 
         # Return model name for ultralytics to download
         return self.detection.model_size
@@ -210,7 +240,16 @@ class ConfigManager:
         print("🔧 CONFIGURATION SUMMARY")
         print("="*50)
         print(f"Video Format Support: {', '.join(self.video.supported_formats)}")
-        print(f"YOLO Model: {self.detection.model_size}")
+        
+        # Show which model type will be used
+        model_path = self.get_model_path()
+        if model_path.endswith('.engine'):
+            print(f"Model: {os.path.basename(model_path)} (TensorRT Engine)")
+        elif model_path.endswith('.onnx'):
+            print(f"Model: {os.path.basename(model_path)} (ONNX)")
+        else:
+            print(f"Model: {os.path.basename(model_path)} (PyTorch)")
+            
         print(f"Detection Confidence: {self.detection.conf_threshold}")
         print(f"Unattended Threshold: {self.alert.t_unattended}s")
         print(f"Motion Threshold: {self.alert.motion_threshold_px}px")
