@@ -5,7 +5,6 @@ Provides high-performance inference using TensorRT engine files
 
 import numpy as np
 import tensorrt as trt
-import pycuda.driver as cuda
 from typing import List, Dict, Any, Tuple
 import cv2
 
@@ -28,7 +27,6 @@ class TensorRTEngine:
         self.inputs = []
         self.outputs = []
         self.bindings = []
-        self.stream = None
         
         # Load engine
         self._load_engine()
@@ -58,50 +56,38 @@ class TensorRTEngine:
             raise RuntimeError(error_msg)
     
     def _allocate_buffers(self):
-        """Allocate GPU memory buffers"""
-        try:
-            self.inputs = []
-            self.outputs = []
-            self.bindings = []
+        """Allocate memory buffers using TensorRT only"""
+        self.inputs = []
+        self.outputs = []
+        self.bindings = []
+        
+        for binding in self.engine:
+            size = trt.volume(self.engine.get_binding_shape(binding))
+            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
             
-            # Create stream for async operations
-            self.stream = cuda.Stream()
+            # Allocate host buffer only
+            host_mem = np.empty(size, dtype)
             
-            for binding in self.engine:
-                size = trt.volume(self.engine.get_binding_shape(binding))
-                dtype = trt.nptype(self.engine.get_binding_dtype(binding))
+            # Use host memory pointer for bindings
+            self.bindings.append(int(host_mem.ctypes.data))
+            
+            if self.engine.binding_is_input(binding):
+                self.inputs.append({
+                    'host': host_mem,
+                    'shape': self.engine.get_binding_shape(binding),
+                    'dtype': dtype,
+                    'name': binding
+                })
+            else:
+                self.outputs.append({
+                    'host': host_mem,
+                    'shape': self.engine.get_binding_shape(binding),
+                    'dtype': dtype,
+                    'name': binding
+                })
                 
-                # Allocate host and device buffers
-                host_mem = cuda.pagelocked_empty(size, dtype)
-                device_mem = cuda.mem_alloc(host_mem.nbytes)
-                
-                self.bindings.append(int(device_mem))
-                
-                if self.engine.binding_is_input(binding):
-                    self.inputs.append({
-                        'host': host_mem,
-                        'device': device_mem,
-                        'shape': self.engine.get_binding_shape(binding),
-                        'dtype': dtype,
-                        'name': binding
-                    })
-                else:
-                    self.outputs.append({
-                        'host': host_mem,
-                        'device': device_mem,
-                        'shape': self.engine.get_binding_shape(binding),
-                        'dtype': dtype,
-                        'name': binding
-                    })
-                    
-            if self.logger:
-                self.logger.info(f"Allocated buffers - Inputs: {len(self.inputs)}, Outputs: {len(self.outputs)}")
-                
-        except Exception as e:
-            error_msg = f"Failed to allocate TensorRT buffers: {e}"
-            if self.logger:
-                self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
+        if self.logger:
+            self.logger.info(f"Allocated buffers - Inputs: {len(self.inputs)}, Outputs: {len(self.outputs)}")
     
     def preprocess_image(self, image: np.ndarray) -> np.ndarray:
         """
@@ -141,7 +127,7 @@ class TensorRTEngine:
     
     def inference(self, preprocessed_image: np.ndarray) -> np.ndarray:
         """
-        Run inference on preprocessed image
+        Run inference on preprocessed image using TensorRT only
         
         Args:
             preprocessed_image: Preprocessed image tensor
@@ -149,31 +135,17 @@ class TensorRTEngine:
         Returns:
             Raw inference output
         """
-        try:
-            # Copy input data to GPU
-            np.copyto(self.inputs[0]['host'], preprocessed_image.ravel())
-            cuda.memcpy_htod_async(self.inputs[0]['device'], self.inputs[0]['host'], self.stream)
-            
-            # Run inference
-            self.context.execute_async_v2(bindings=self.bindings, stream_handle=self.stream.handle)
-            
-            # Copy output data to CPU
-            cuda.memcpy_dtoh_async(self.outputs[0]['host'], self.outputs[0]['device'], self.stream)
-            
-            # Synchronize stream
-            self.stream.synchronize()
-            
-            # Reshape output
-            output_shape = self.outputs[0]['shape']
-            output = self.outputs[0]['host'].reshape(output_shape)
-            
-            return output
-            
-        except Exception as e:
-            error_msg = f"TensorRT inference failed: {e}"
-            if self.logger:
-                self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
+        # Copy input data to host buffer
+        np.copyto(self.inputs[0]['host'], preprocessed_image.ravel())
+        
+        # Run synchronous inference
+        self.context.execute_v2(bindings=self.bindings)
+        
+        # Reshape output
+        output_shape = self.outputs[0]['shape']
+        output = self.outputs[0]['host'].reshape(output_shape)
+        
+        return output
     
     def postprocess_output(self, output: np.ndarray, conf_threshold: float, coco_classes: List[str]) -> List[Dict[str, Any]]:
         """
@@ -264,29 +236,16 @@ class TensorRTEngine:
         return tuple(self.outputs[0]['shape'])
     
     def cleanup(self):
-        """Clean up GPU resources"""
-        try:
-            if self.stream:
-                self.stream = None
-            if self.context:
-                del self.context
-            if self.engine:
-                del self.engine
-                
-            # Free GPU memory
-            for inp in self.inputs:
-                if 'device' in inp:
-                    inp['device'].free()
-            for out in self.outputs:
-                if 'device' in out:
-                    out['device'].free()
-                    
-            if self.logger:
-                self.logger.info("TensorRT resources cleaned up")
-                
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"Error during TensorRT cleanup: {e}")
+        """Clean up TensorRT resources"""
+        if self.context:
+            del self.context
+            self.context = None
+        if self.engine:
+            del self.engine
+            self.engine = None
+            
+        if self.logger:
+            self.logger.info("TensorRT resources cleaned up")
     
     def __del__(self):
         """Destructor to ensure cleanup"""

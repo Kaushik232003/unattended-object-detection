@@ -10,7 +10,6 @@ import time
 import argparse
 
 # Third-party imports
-import cv2
 import numpy as np
 from collections import deque
 from typing import Dict, List, Tuple, Any
@@ -25,7 +24,7 @@ try:
     from deep_sort_realtime.deepsort_tracker import DeepSort
 except ImportError as e:
     print(f"❌ Failed to import required libraries: {e}")
-    print("Please install dependencies: pip install tensorrt pycuda nvidia-ml-py")
+    print("Please install dependencies: pip install tensorrt nvidia-ml-py")
     sys.exit(1)
 
 
@@ -347,7 +346,7 @@ class UnattendedObjectDetector:
             
             # Initialize TensorRT engine
             try:
-                import pycuda.autoinit  # Initialize CUDA context - import here to avoid lint warnings
+                pass  # pycuda.autoinit removed
             except ImportError:
                 pass  # Will be handled by TensorRTEngine
             self.trt_engine = TensorRTEngine(engine_path, self.logger)
